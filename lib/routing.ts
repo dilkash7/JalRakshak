@@ -1,0 +1,173 @@
+import { StoredUser, StoredReport, getDevUsers, getDevReports } from "./dev-store";
+import { UserModel } from "./models/User";
+import { ReportModel } from "./models/Report";
+import { isUsingDevFallback, connectToDatabase } from "./db";
+
+export interface AssignedStaffInfo {
+  userId: string;
+  name: string;
+  assignedAt: Date;
+  staffId?: string;
+  taluk?: string;
+  district?: string;
+  state?: string;
+}
+
+export interface ReportLocationInput {
+  state?: string;
+  district?: string;
+  taluk?: string;
+  city?: string;
+}
+
+/**
+ * Deterministically routes a report to an active staff member based on exact jurisdiction:
+ * 1. Matches State
+ * 2. Matches District
+ * 3. Matches Taluk
+ * 4. Filters to active staff only
+ * 5. If multiple qualify, selects the one with the lowest open report workload
+ * 6. If none qualify, returns null (remains in Unassigned Queue)
+ */
+export async function findEligibleStaffForReport(
+  location: ReportLocationInput
+): Promise<AssignedStaffInfo | null> {
+  const targetState = location.state?.trim().toLowerCase();
+  const targetDistrict = location.district?.trim().toLowerCase();
+  const targetTaluk = location.taluk?.trim().toLowerCase();
+
+  // If no taluk is provided, cannot auto-route to taluk officer
+  if (!targetTaluk) {
+    return null;
+  }
+
+  if (isUsingDevFallback()) {
+    const users = getDevUsers();
+    const reports = getDevReports();
+
+    // 1. Filter eligible active staff matching exact state, district, taluk
+    const eligible = users.filter((u) => {
+      if (u.role !== "staff" || u.status === "suspended") return false;
+      const uState = (u.state || "").trim().toLowerCase();
+      const uDistrict = (u.district || "").trim().toLowerCase();
+      const uTaluk = (u.taluk || "").trim().toLowerCase();
+
+      // If staff has state defined, must match targetState
+      if (targetState && uState && uState !== targetState) return false;
+      // If staff has district defined, must match targetDistrict
+      if (targetDistrict && uDistrict && uDistrict !== targetDistrict) return false;
+      // Exact taluk match is required
+      return uTaluk === targetTaluk;
+    });
+
+    if (eligible.length === 0) {
+      return null;
+    }
+
+    if (eligible.length === 1) {
+      const match = eligible[0];
+      return {
+        userId: match._id,
+        name: match.name,
+        assignedAt: new Date(),
+        staffId: match.staffId,
+        taluk: match.taluk,
+        district: match.district,
+        state: match.state,
+      };
+    }
+
+    // 2. Multiple eligible officers: select the one with fewest open reports
+    const openStatus = ["submitted", "under_review", "investigating", "repair_scheduled", "in_progress"];
+    const candidatesWithWorkload = eligible.map((staff) => {
+      const openCount = reports.filter(
+        (r) =>
+          r.assignedTo?.userId === staff._id &&
+          openStatus.includes(r.status)
+      ).length;
+      return { staff, openCount };
+    });
+
+    candidatesWithWorkload.sort((a, b) => a.openCount - b.openCount);
+
+    const chosen = candidatesWithWorkload[0].staff;
+    return {
+      userId: chosen._id,
+      name: chosen.name,
+      assignedAt: new Date(),
+      staffId: chosen.staffId,
+      taluk: chosen.taluk,
+      district: chosen.district,
+      state: chosen.state,
+    };
+  }
+
+  // Database mode (MongoDB)
+  await connectToDatabase();
+  const query: any = {
+    role: "staff",
+    status: "active",
+    taluk: new RegExp(`^${targetTaluk}$`, "i"),
+  };
+  if (targetState) query.state = new RegExp(`^${targetState}$`, "i");
+  if (targetDistrict) query.district = new RegExp(`^${targetDistrict}$`, "i");
+
+  const eligible = await UserModel.find(query).lean();
+  if (!eligible || eligible.length === 0) {
+    return null;
+  }
+
+  if (eligible.length === 1) {
+    const match: any = eligible[0];
+    return {
+      userId: String(match._id),
+      name: match.name,
+      assignedAt: new Date(),
+      staffId: match.staffId,
+      taluk: match.taluk,
+      district: match.district,
+      state: match.state,
+    };
+  }
+
+  // Workload query for multiple candidates
+  const openStatus = ["submitted", "under_review", "investigating", "repair_scheduled", "in_progress"];
+  const candidateIds = eligible.map((u: any) => String(u._id));
+
+  const counts = await ReportModel.aggregate([
+    {
+      $match: {
+        "assignedTo.userId": { $in: candidateIds },
+        status: { $in: openStatus },
+      },
+    },
+    {
+      $group: {
+        _id: "$assignedTo.userId",
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const countMap: Record<string, number> = {};
+  counts.forEach((c) => {
+    countMap[c._id] = c.count;
+  });
+
+  const sorted = [...eligible].sort((a: any, b: any) => {
+    const countA = countMap[String(a._id)] || 0;
+    const countB = countMap[String(b._id)] || 0;
+    return countA - countB;
+  });
+
+  const chosen: any = sorted[0];
+  return {
+    userId: String(chosen._id),
+    name: chosen.name,
+    assignedAt: new Date(),
+    staffId: chosen.staffId,
+    taluk: chosen.taluk,
+    district: chosen.district,
+    state: chosen.state,
+  };
+}
