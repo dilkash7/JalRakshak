@@ -24,11 +24,14 @@ import {
   X,
   RefreshCw,
   Building2,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { getStates, getDistricts, getTaluks } from "@/lib/geo-data";
+import { clientStore } from "@/lib/client-store";
+import { clientAuth } from "@/lib/client-auth";
 
 export default function AdminDashboardPage() {
   const router = useRouter();
@@ -40,6 +43,8 @@ export default function AdminDashboardPage() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [roleSwitching, setRoleSwitching] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   // Main View Tabs: "reports" | "unassigned" | "staff"
   const [activeTab, setActiveTab] = useState<"reports" | "unassigned" | "staff">("reports");
@@ -100,76 +105,77 @@ export default function AdminDashboardPage() {
   const availableDistricts = getDistricts(newStaffState);
   const availableTaluks = getTaluks(newStaffState, newStaffDistrict);
 
-  // Load current session
+  // Load current session from clientAuth
   useEffect(() => {
     fetchSession();
   }, []);
 
-  const fetchSession = async () => {
-    try {
-      const res = await fetch("/api/auth/me");
-      if (!res.ok) throw new Error("Unauthenticated");
-      const data = await res.json();
-      if (data.authenticated) {
-        setCurrentUser(data.user);
-      } else {
-        router.push("/admin/login");
-      }
-    } catch {
+  const fetchSession = () => {
+    const user = clientAuth.getCurrentUser();
+    if (user) {
+      setCurrentUser(user);
+    } else {
       router.push("/admin/login");
     }
+    setLoading(false);
   };
 
-  // Load reports based on filters and activeTab
-  const loadReports = async (targetPage = 1) => {
+  // Load reports based on filters and activeTab from clientStore
+  const loadReports = (targetPage = 1) => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      params.set("page", String(targetPage));
-      params.set("limit", "15");
+      const isUnassignedTab = activeTab === "unassigned";
+      const { reports: allMatched, total: totalMatched, unassignedCount } = clientStore.getReports({
+        status: isUnassignedTab ? undefined : (statusFilter !== "all" ? statusFilter : undefined),
+        category: categoryFilter !== "all" ? categoryFilter : undefined,
+        taluk: talukFilter !== "all" && currentUser?.role === "admin" ? talukFilter : undefined,
+        search: search.trim() || undefined,
+        unassignedOnly: isUnassignedTab,
+        assignedToUserId: currentUser?.role === "staff" ? currentUser.id : undefined,
+      });
 
-      if (activeTab === "unassigned") {
-        params.set("unassigned", "true");
-      } else {
-        if (statusFilter !== "all") params.set("status", statusFilter);
-      }
+      const limit = 15;
+      const calculatedPages = Math.ceil(totalMatched / limit) || 1;
+      const startIndex = (targetPage - 1) * limit;
+      const pageReports = allMatched.slice(startIndex, startIndex + limit);
 
-      if (categoryFilter !== "all") params.set("category", categoryFilter);
-      if (talukFilter !== "all" && currentUser?.role === "admin") {
-        params.set("taluk", talukFilter);
-      }
-      if (search.trim()) params.set("search", search.trim());
-
-      const res = await fetch(`/api/admin/reports?${params.toString()}`);
-      if (res.status === 401 || res.status === 403) {
-        router.push("/admin/login");
-        return;
-      }
-      const data = await res.json();
-      if (data.success) {
-        setReports(data.reports);
-        setTotal(data.total);
-        setUnassignedCount(data.unassignedCount || 0);
-        setTotalPages(data.totalPages || 1);
-        setPage(targetPage);
-      }
+      setReports(pageReports);
+      setTotal(totalMatched);
+      setUnassignedCount(unassignedCount);
+      setTotalPages(calculatedPages);
+      setPage(targetPage);
     } catch (err) {
-      console.error("Failed to load admin reports:", err);
+      console.error("Failed to load reports from clientStore:", err);
     } finally {
       setLoading(false);
     }
   };
 
-  // Load Staff List
-  const loadStaffDirectory = async () => {
+  // Load Staff List with live calculated workloads
+  const loadStaffDirectory = () => {
     if (currentUser?.role !== "admin") return;
     setLoadingStaff(true);
     try {
-      const res = await fetch("/api/admin/staff");
-      const data = await res.json();
-      if (data.success && Array.isArray(data.staff)) {
-        setStaffList(data.staff);
-      }
+      const allStaff = clientStore.getStaff();
+      const { reports: allReports } = clientStore.getReports();
+      const openStatuses = ["submitted", "under_review", "investigating", "repair_scheduled", "in_progress"];
+
+      const staffWithWorkload = allStaff.map((staff) => {
+        const openCount = allReports.filter(
+          (r) => r.assignedTo?.userId === staff._id && openStatuses.includes(r.status)
+        ).length;
+        const totalAssigned = allReports.filter(
+          (r) => r.assignedTo?.userId === staff._id
+        ).length;
+
+        return {
+          ...staff,
+          openReportsCount: openCount,
+          totalAssignedCount: totalAssigned,
+        };
+      });
+
+      setStaffList(staffWithWorkload);
     } catch (err) {
       console.error("Failed to load staff list:", err);
     } finally {
@@ -187,8 +193,22 @@ export default function AdminDashboardPage() {
     }
   }, [currentUser, activeTab, statusFilter, categoryFilter, talukFilter]);
 
+  // Subscribe to live clientStore changes
+  useEffect(() => {
+    const unsubscribe = clientStore.subscribe(() => {
+      if (currentUser) {
+        if (activeTab === "staff") {
+          loadStaffDirectory();
+        } else {
+          loadReports(page);
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, [currentUser, activeTab, page]);
+
   // Demo Role Switcher
-  const handleQuickRoleSwitch = async (role: "admin" | "puttur" | "mangaluru") => {
+  const handleQuickRoleSwitch = (role: "admin" | "puttur" | "mangaluru") => {
     setRoleSwitching(true);
     try {
       let email = "admin@jalrakshak.org";
@@ -202,22 +222,15 @@ export default function AdminDashboardPage() {
         password = "JalRakshak@2026Staff!";
       }
 
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-
-      if (!res.ok) throw new Error("Role switch failed");
-
-      const data = await res.json();
-      setCurrentUser(data.user);
-      setActiveTab("reports");
-      setStatusFilter("all");
-      setCategoryFilter("all");
-      setTalukFilter("all");
-      setSearch("");
-      router.refresh();
+      const res = clientAuth.login(email, password);
+      if (res.success && res.user) {
+        setCurrentUser(res.user);
+        setActiveTab("reports");
+        setStatusFilter("all");
+        setCategoryFilter("all");
+        setTalukFilter("all");
+        setSearch("");
+      }
     } catch (err) {
       console.error("Role switch error:", err);
     } finally {
@@ -225,8 +238,8 @@ export default function AdminDashboardPage() {
     }
   };
 
-  const handleLogout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
+  const handleLogout = () => {
+    clientAuth.logout();
     router.push("/admin/login");
   };
 
@@ -236,51 +249,36 @@ export default function AdminDashboardPage() {
   };
 
   // Staff Management Actions
-  const handleToggleStaffStatus = async (staffId: string, currentStatus: string) => {
+  const handleToggleStaffStatus = (staffId: string) => {
     try {
-      const newStatus = currentStatus === "active" ? "suspended" : "active";
-      const res = await fetch(`/api/admin/staff/${staffId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      if (res.ok) {
-        loadStaffDirectory();
-      }
+      clientStore.toggleStaffStatus(staffId);
+      loadStaffDirectory();
     } catch (err) {
       console.error("Error updating staff status:", err);
     }
   };
 
-  const handleCreateStaff = async (e: React.FormEvent) => {
+  const handleCreateStaff = (e: React.FormEvent) => {
     e.preventDefault();
     setCreatingStaff(true);
     setStaffMessage(null);
     setModalError(null);
 
     try {
-      const res = await fetch("/api/admin/staff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newStaffName.trim(),
-          email: newStaffEmail.trim(),
-          staffId: newStaffId.trim() || generateStaffId(newStaffState, newStaffTaluk),
-          state: newStaffState,
-          district: newStaffDistrict,
-          taluk: newStaffTaluk,
-          password: newStaffPassword.trim() || "JalRakshak@2026Staff!",
-        }),
+      const staffBadgeId = newStaffId.trim() || generateStaffId(newStaffState, newStaffTaluk);
+      const newOfficer = clientStore.registerStaff({
+        name: newStaffName.trim(),
+        email: newStaffEmail.trim(),
+        staffId: staffBadgeId,
+        state: newStaffState,
+        district: newStaffDistrict,
+        taluk: newStaffTaluk,
+        password: newStaffPassword.trim() || "JalRakshak@2026Staff!",
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to create staff member");
-      }
 
       setStaffMessage({
         type: "success",
-        text: data.message || `Officer ${newStaffName} registered successfully!`,
+        text: `Officer ${newOfficer.name} (${newOfficer.staffId}) registered successfully for ${newOfficer.taluk}!`,
       });
       setShowAddStaffModal(false);
       setNewStaffName("");
@@ -293,6 +291,22 @@ export default function AdminDashboardPage() {
       setModalError(err.message || "Could not register officer");
     } finally {
       setCreatingStaff(false);
+    }
+  };
+
+  // Reset Demo Data Handler
+  const handleConfirmReset = async () => {
+    setResetting(true);
+    await clientStore.resetDemoData();
+    setResetting(false);
+    setShowResetModal(false);
+    setStaffMessage({
+      type: "success",
+      text: "Demonstration dataset and sample officers have been restored to baseline.",
+    });
+    loadReports(1);
+    if (activeTab === "staff") {
+      loadStaffDirectory();
     }
   };
 
@@ -348,6 +362,19 @@ export default function AdminDashboardPage() {
                   {currentUser.role}
                 </span>
               </div>
+
+              {/* Reset Demo Data Button (Admin only) */}
+              {currentUser.role === "admin" && (
+                <button
+                  type="button"
+                  onClick={() => setShowResetModal(true)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-full border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 transition-colors shadow-sm"
+                  title="Reset all reports and demonstration officers to pristine competition state"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Reset Demo Data</span>
+                </button>
+              )}
 
               {/* Logout Button */}
               <button
@@ -868,7 +895,7 @@ export default function AdminDashboardPage() {
                           <td className="px-6 py-4 text-right whitespace-nowrap">
                             <button
                               type="button"
-                              onClick={() => handleToggleStaffStatus(s._id, s.status)}
+                              onClick={() => handleToggleStaffStatus(s._id)}
                               className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors ${
                                 s.status === "active"
                                   ? "border-rose-200 text-rose-700 hover:bg-rose-50"
@@ -1043,6 +1070,38 @@ export default function AdminDashboardPage() {
                   </Button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* Reset Demo Data Confirmation Modal */}
+        {showResetModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-forest-950/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-3xl border border-[#E8ECE9] shadow-2xl w-full max-w-md p-6 space-y-4">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center mx-auto">
+                <RotateCcw className="w-6 h-6" />
+              </div>
+              <div className="text-center space-y-2">
+                <h3 className="text-lg font-bold text-forest-850">Reset Demonstration Data?</h3>
+                <p className="text-xs text-sage-600 leading-relaxed">
+                  This will restore baseline competition demo reports, sample officers, and verified statistics.
+                  Any custom citizen reports submitted during this browser session and custom photographs stored in IndexedDB will be safely cleared.
+                </p>
+              </div>
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <Button variant="outline" type="button" onClick={() => setShowResetModal(false)} disabled={resetting}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  type="button"
+                  onClick={handleConfirmReset}
+                  isLoading={resetting}
+                  className="bg-amber-600 hover:bg-amber-700 text-white"
+                >
+                  Confirm Reset
+                </Button>
+              </div>
             </div>
           </div>
         )}

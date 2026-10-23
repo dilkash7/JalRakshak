@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { clientAuth } from "@/lib/client-auth";
+import { clientStore, StoredUser } from "@/lib/client-store";
 
 export default function StaffLoginPage() {
   const router = useRouter();
@@ -23,26 +25,28 @@ export default function StaffLoginPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [officers, setOfficers] = useState<StoredUser[]>([]);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  useEffect(() => {
+    setOfficers(clientStore.getStaff());
+    const unsub = clientStore.subscribe(() => {
+      setOfficers(clientStore.getStaff());
+    });
+    return () => unsub();
+  }, []);
+
+  const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: identifier.trim(), password }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Staff authentication failed");
+      const res = clientAuth.login(identifier.trim(), password);
+      if (!res.success) {
+        throw new Error(res.error || "Staff authentication failed");
       }
 
       router.push("/admin");
-      router.refresh();
     } catch (err: any) {
       setError(err.message || "An unexpected error occurred during staff login.");
     } finally {
@@ -109,46 +113,29 @@ export default function StaffLoginPage() {
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => fillOfficerCredentials("STF-PUTTUR-01")}
-                className="text-left p-2.5 rounded-xl border border-[#DCE4DF] bg-white hover:bg-forest-50/70 transition-all group"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-forest-900">Ramesh Bhat</span>
-                  <span className="text-[10px] font-semibold text-forest-700 bg-forest-50 px-1.5 py-0.5 rounded">
-                    Fill
-                  </span>
-                </div>
-                <div className="text-[11px] font-mono text-sage-500 mt-0.5">
-                  ID: STF-PUTTUR-01
-                </div>
-                <div className="text-[10px] text-emerald-700 flex items-center gap-1 mt-1 font-medium">
-                  <MapPin className="w-2.5 h-2.5" />
-                  <span>Puttur Taluk</span>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => fillOfficerCredentials("STF-MNG-01")}
-                className="text-left p-2.5 rounded-xl border border-[#DCE4DF] bg-white hover:bg-forest-50/70 transition-all group"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-forest-900">Sunil Kumar</span>
-                  <span className="text-[10px] font-semibold text-forest-700 bg-forest-50 px-1.5 py-0.5 rounded">
-                    Fill
-                  </span>
-                </div>
-                <div className="text-[11px] font-mono text-sage-500 mt-0.5">
-                  ID: STF-MNG-01
-                </div>
-                <div className="text-[10px] text-cyan-700 flex items-center gap-1 mt-1 font-medium">
-                  <MapPin className="w-2.5 h-2.5" />
-                  <span>Mangaluru Taluk</span>
-                </div>
-              </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
+              {officers.map((officer) => (
+                <button
+                  key={officer._id}
+                  type="button"
+                  onClick={() => fillOfficerCredentials(officer.staffId || officer.email)}
+                  className="text-left p-2.5 rounded-xl border border-[#DCE4DF] bg-white hover:bg-forest-50/70 transition-all group"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-forest-900 truncate">{officer.name}</span>
+                    <span className="text-[10px] font-semibold text-forest-700 bg-forest-50 px-1.5 py-0.5 rounded">
+                      Fill
+                    </span>
+                  </div>
+                  <div className="text-[11px] font-mono text-sage-500 mt-0.5">
+                    ID: {officer.staffId || officer.email}
+                  </div>
+                  <div className="text-[10px] text-emerald-700 flex items-center gap-1 mt-1 font-medium">
+                    <MapPin className="w-2.5 h-2.5" />
+                    <span>{officer.taluk || officer.district || "Field Officer"}</span>
+                  </div>
+                </button>
+              ))}
             </div>
 
             <div className="text-[11px] font-mono text-forest-900 bg-white/70 p-2 rounded-xl border border-[#E0E7E2] flex items-center justify-between">

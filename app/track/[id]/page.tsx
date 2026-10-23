@@ -21,7 +21,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { PublicReport } from "@/lib/serializer";
+import { PublicReport, toPublicReport } from "@/lib/serializer";
+import { clientStore } from "@/lib/client-store";
 
 export default function ReportDetailPage() {
   const params = useParams();
@@ -35,30 +36,26 @@ export default function ReportDetailPage() {
     if (!id) return;
 
     setLoading(true);
-    fetch(`/api/reports/${id}`)
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error(
-            res.status === 404
-              ? "Report not found. Please verify the 10-character Report ID."
-              : "Failed to load report."
-          );
-        }
-        return res.json();
-      })
-      .then((data) => {
-        if (data.success && data.report) {
-          setReport(data.report);
+    const loadReportData = () => {
+      try {
+        const found = clientStore.getReportById(id);
+        if (!found) {
+          setError("Report not found. Please verify the 10-character Report ID.");
+          setReport(null);
         } else {
-          throw new Error("Could not load report details.");
+          setError(null);
+          setReport(toPublicReport(found as any));
         }
-      })
-      .catch((err) => {
-        setError(err.message || "An error occurred.");
-      })
-      .finally(() => {
+      } catch (err: any) {
+        setError(err.message || "Failed to load report.");
+      } finally {
         setLoading(false);
-      });
+      }
+    };
+
+    loadReportData();
+    const unsubscribe = clientStore.subscribe(loadReportData);
+    return () => unsubscribe();
   }, [id]);
 
   if (loading) {

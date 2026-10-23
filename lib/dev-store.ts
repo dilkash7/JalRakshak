@@ -98,13 +98,16 @@ const globalStore = global as unknown as {
 
 export function saveDevData(): void {
   try {
+    if (process.env.VERCEL || process.env.NODE_ENV === "production") {
+      return; // Do not write to server filesystem in Vercel or production
+    }
     const data = {
       reports: globalStore.__jalrakshak_reports || [],
       users: globalStore.__jalrakshak_users || [],
     };
     fs.writeFileSync(DEV_DATA_FILE, JSON.stringify(data, null, 2), "utf-8");
   } catch (err) {
-    console.warn("[DevStore] Failed to persist data to disk:", err);
+    // Graceful silent fallback for read-only environments
   }
 }
 

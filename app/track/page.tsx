@@ -17,7 +17,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { PublicReport } from "@/lib/serializer";
+import { PublicReport, toPublicReport } from "@/lib/serializer";
+import { clientStore } from "@/lib/client-store";
 
 export default function TrackPage() {
   const router = useRouter();
@@ -53,28 +54,29 @@ export default function TrackPage() {
     router.push(`/track/${clean}`);
   };
 
-  // Fetch Community Reports Feed
-  const fetchFeed = async () => {
+  // Fetch Community Reports Feed from Central Browser Store
+  const fetchFeed = () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      params.set("page", String(page));
-      params.set("limit", "9");
+      const { reports: allMatching, total } = clientStore.getReports({
+        status: selectedStatus !== "all" ? selectedStatus : undefined,
+        category: selectedCategory !== "all" ? selectedCategory : undefined,
+        city: cityFilter.trim() || undefined,
+      });
 
-      if (selectedStatus !== "all") params.set("status", selectedStatus);
-      if (selectedCategory !== "all") params.set("category", selectedCategory);
-      if (cityFilter.trim()) params.set("city", cityFilter.trim());
+      const limit = 9;
+      const calculatedPages = Math.ceil(total / limit) || 1;
+      const startIndex = (page - 1) * limit;
+      const pageReports = allMatching.slice(startIndex, startIndex + limit);
 
-      const res = await fetch(`/api/reports?${params.toString()}`);
-      const data = await res.json();
+      // Serialize to PublicReport format to strip sensitive private contact data
+      const serialized = pageReports.map((r) => toPublicReport(r as any));
 
-      if (data.success) {
-        setReports(data.reports);
-        setTotalPages(data.totalPages || 1);
-        setTotalCount(data.total || 0);
-      }
+      setReports(serialized);
+      setTotalPages(calculatedPages);
+      setTotalCount(total);
     } catch (err) {
-      console.error("Failed to fetch community reports:", err);
+      console.error("Failed to fetch community reports from local store:", err);
     } finally {
       setLoading(false);
     }
@@ -82,6 +84,8 @@ export default function TrackPage() {
 
   useEffect(() => {
     fetchFeed();
+    const unsubscribe = clientStore.subscribe(fetchFeed);
+    return () => unsubscribe();
   }, [page, selectedStatus, selectedCategory]);
 
   const handleCitySearch = (e: React.FormEvent) => {

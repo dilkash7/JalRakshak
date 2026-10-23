@@ -2,23 +2,19 @@ import { StoredUser, StoredReport, getDevUsers, getDevReports } from "./dev-stor
 import { UserModel } from "./models/User";
 import { ReportModel } from "./models/Report";
 import { isUsingDevFallback, connectToDatabase } from "./db";
+import {
+  AssignedStaffInfo,
+  ReportLocationInput,
+  findBestOfficerFromLists,
+  findBestOfficerForReport,
+} from "./routing-engine";
 
-export interface AssignedStaffInfo {
-  userId: string;
-  name: string;
-  assignedAt: Date;
-  staffId?: string;
-  taluk?: string;
-  district?: string;
-  state?: string;
-}
-
-export interface ReportLocationInput {
-  state?: string;
-  district?: string;
-  taluk?: string;
-  city?: string;
-}
+export {
+  type AssignedStaffInfo,
+  type ReportLocationInput,
+  findBestOfficerFromLists,
+  findBestOfficerForReport,
+};
 
 /**
  * Deterministically routes a report to an active staff member based on exact jurisdiction:
@@ -44,62 +40,7 @@ export async function findEligibleStaffForReport(
   if (isUsingDevFallback()) {
     const users = getDevUsers();
     const reports = getDevReports();
-
-    // 1. Filter eligible active staff matching exact state, district, taluk
-    const eligible = users.filter((u) => {
-      if (u.role !== "staff" || u.status === "suspended") return false;
-      const uState = (u.state || "").trim().toLowerCase();
-      const uDistrict = (u.district || "").trim().toLowerCase();
-      const uTaluk = (u.taluk || "").trim().toLowerCase();
-
-      // If staff has state defined, must match targetState
-      if (targetState && uState && uState !== targetState) return false;
-      // If staff has district defined, must match targetDistrict
-      if (targetDistrict && uDistrict && uDistrict !== targetDistrict) return false;
-      // Exact taluk match is required
-      return uTaluk === targetTaluk;
-    });
-
-    if (eligible.length === 0) {
-      return null;
-    }
-
-    if (eligible.length === 1) {
-      const match = eligible[0];
-      return {
-        userId: match._id,
-        name: match.name,
-        assignedAt: new Date(),
-        staffId: match.staffId,
-        taluk: match.taluk,
-        district: match.district,
-        state: match.state,
-      };
-    }
-
-    // 2. Multiple eligible officers: select the one with fewest open reports
-    const openStatus = ["submitted", "under_review", "investigating", "repair_scheduled", "in_progress"];
-    const candidatesWithWorkload = eligible.map((staff) => {
-      const openCount = reports.filter(
-        (r) =>
-          r.assignedTo?.userId === staff._id &&
-          openStatus.includes(r.status)
-      ).length;
-      return { staff, openCount };
-    });
-
-    candidatesWithWorkload.sort((a, b) => a.openCount - b.openCount);
-
-    const chosen = candidatesWithWorkload[0].staff;
-    return {
-      userId: chosen._id,
-      name: chosen.name,
-      assignedAt: new Date(),
-      staffId: chosen.staffId,
-      taluk: chosen.taluk,
-      district: chosen.district,
-      state: chosen.state,
-    };
+    return findBestOfficerFromLists(location, users, reports);
   }
 
   // Database mode (MongoDB)

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { clientAuth } from "@/lib/client-auth";
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -23,29 +24,22 @@ export default function AdminLoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Login failed");
+      const res = clientAuth.login(email.trim(), password);
+      if (!res.success) {
+        throw new Error(res.error || "Login failed");
       }
 
-      if (data.user?.role !== "admin") {
+      if (res.user?.role !== "admin") {
         throw new Error("This portal is restricted to Municipal Administrators. Field officers should use Staff Login.");
       }
 
       router.push("/admin");
-      router.refresh();
     } catch (err: any) {
       setError(err.message || "An unexpected error occurred during admin authentication.");
     } finally {

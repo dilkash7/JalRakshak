@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { FileText, Waves, CheckCircle2, Droplet } from "lucide-react";
+import { clientStore } from "@/lib/client-store";
 
 interface StatsData {
   totalReports: number;
@@ -19,16 +20,12 @@ export const StatsStrip: React.FC = () => {
   });
 
   useEffect(() => {
-    fetch("/api/stats")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success && data.stats) {
-          setStats(data.stats);
-        }
-      })
-      .catch((err) => {
-        console.warn("Using baseline demonstration figures:", err);
-      });
+    const updateStats = () => {
+      setStats(clientStore.getPublicStats());
+    };
+    updateStats();
+    const unsub = clientStore.subscribe(updateStats);
+    return () => unsub();
   }, []);
 
   const cards = [

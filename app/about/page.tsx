@@ -94,14 +94,20 @@ export default function AboutPage() {
             </div>
           </div>
 
-          {/* Prototype Disclosure Card */}
-          <div className="p-5 rounded-2xl bg-[#F4F7F5] border border-[#DCE4DF] text-xs text-forest-900 space-y-1.5">
+          {/* Prototype Disclosure Card & Browser Storage Notice */}
+          <div className="p-5 rounded-2xl bg-[#F4F7F5] border border-[#DCE4DF] text-xs text-forest-900 space-y-2">
             <div className="font-bold uppercase tracking-wider text-[11px] text-forest-800">
-              Technology Demonstration & Operational Scope
+              Technology Demonstration & Browser Storage Scope
             </div>
             <p className="text-sage-600 leading-relaxed">
-              JalRakshak is an advanced civic prototype created by Team Elevate. It models complete end-to-end citizen reporting, automated taluk jurisdiction matching, and staff triage. It records reports, enables authorized staff to inspect and resolve issues, and provides transparent public tracking without requiring third-party cloud subscriptions or claiming unverified external integrations.
+              JalRakshak is an advanced civic prototype created by Team Elevate. It models complete end-to-end citizen reporting, automated taluk jurisdiction matching, and staff triage with zero paid external database dependencies.
             </p>
+            <div className="pt-1 text-[11px] text-sage-600 space-y-1">
+              <p>• <strong>Browser-Origin Storage:</strong> Records are stored in your browser&apos;s localStorage, and uploaded photographs are stored in high-capacity IndexedDB.</p>
+              <p>• <strong>Device Isolation:</strong> Different devices and separate browser profiles maintain independent local stores.</p>
+              <p>• <strong>Data Clearing:</strong> Clearing browser cache or site data will erase local demonstration records and custom photos; you can use the in-app &quot;Reset Demo Data&quot; button anytime to restore clean baseline seeds.</p>
+              <p>• <strong>Vercel Deployment:</strong> Localhost data does not automatically transfer to your deployed Vercel domain; each deployment origin initializes with standard competition demonstration data.</p>
+            </div>
           </div>
         </div>
 

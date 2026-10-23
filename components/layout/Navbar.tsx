@@ -6,23 +6,13 @@ import { usePathname } from "next/navigation";
 import Image from "next/image";
 import { User, Menu, X, Droplet, ShieldCheck } from "lucide-react";
 import { Button } from "../ui/Button";
+import { useSession } from "@/lib/client-auth";
 
 export const Navbar: React.FC = () => {
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [isStaffLoggedIn, setIsStaffLoggedIn] = useState(false);
-
-  useEffect(() => {
-    // Check if staff session cookie or session is active
-    fetch("/api/auth/me")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.authenticated) {
-          setIsStaffLoggedIn(true);
-        }
-      })
-      .catch(() => {});
-  }, [pathname]);
+  const { user } = useSession();
+  const isStaffLoggedIn = Boolean(user);
 
   const navLinks = [
     { label: "Home", href: "/" },

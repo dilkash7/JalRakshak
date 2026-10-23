@@ -21,6 +21,8 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input, Select } from "@/components/ui/Input";
 import { getStates, getDistricts, getTaluks, matchAddressToLgd, resolveOfflineLocation } from "@/lib/geo-data";
+import { clientStore } from "@/lib/client-store";
+import { savePhoto, deletePhoto } from "@/lib/photo-store";
 
 const CATEGORIES = [
   { value: "pipe_burst", label: "Pipe Burst (High Pressure)", desc: "Sudden rupture of main distribution pipeline" },
@@ -227,7 +229,7 @@ export const ReportWizard: React.FC = () => {
     setGpsMessage(null);
   };
 
-  // Photo Upload Simulation / Cloudinary Handler
+  // Photo Upload Handler via Browser IndexedDB Store
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -241,66 +243,40 @@ export const ReportWizard: React.FC = () => {
     setError(null);
 
     try {
-      const file = files[0];
-      if (file.size > 5 * 1024 * 1024) {
-        throw new Error("File exceeds maximum allowed size of 5 MB.");
-      }
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (file.size > 5 * 1024 * 1024) {
+          throw new Error("File exceeds maximum allowed size of 5 MB.");
+        }
 
-      // Check upload signature endpoint
-      const signRes = await fetch("/api/uploads/sign", { method: "POST" });
-      const signData = await signRes.json();
-
-      if (signData.mode === "cloudinary" && signData.cloudName && signData.apiKey) {
-        // Upload directly to Cloudinary
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("api_key", signData.apiKey);
-        formData.append("timestamp", String(signData.timestamp));
-        formData.append("signature", signData.signature);
-        formData.append("folder", signData.folder);
-
-        const uploadRes = await fetch(
-          `https://api.cloudinary.com/v1_1/${signData.cloudName}/image/upload`,
-          { method: "POST", body: formData }
-        );
-        const uploaded = await uploadRes.json();
+        const photoId = `photo-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const saved = await savePhoto(photoId, file, file.name);
 
         setPhotos((prev) => [
           ...prev,
           {
-            publicId: uploaded.public_id,
-            url: uploaded.url,
-            secureUrl: uploaded.secure_url,
+            publicId: saved.id,
+            url: saved.url,
+            secureUrl: saved.secureUrl,
           },
         ]);
-      } else {
-        // Local preview fallback using Data URL
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const result = reader.result as string;
-          setPhotos((prev) => [
-            ...prev,
-            {
-              publicId: `dev-upload-${Date.now()}`,
-              url: result,
-              secureUrl: result,
-            },
-          ]);
-        };
-        reader.readAsDataURL(file);
       }
     } catch (err: any) {
-      setError(err.message || "Failed to upload photo. Please try again.");
+      setError(err.message || "Failed to store photograph in browser storage. Please try again.");
     } finally {
       setUploadingPhoto(false);
     }
   };
 
-  const removePhoto = (index: number) => {
+  const removePhoto = async (index: number) => {
+    const photo = photos[index];
+    if (photo?.publicId) {
+      await deletePhoto(photo.publicId);
+    }
     setPhotos((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Form Submit Handler
+  // Form Submit Handler via Central Browser-Local Client Store
   const handleSubmit = async () => {
     setLoading(true);
     setError(null);
@@ -333,22 +309,13 @@ export const ReportWizard: React.FC = () => {
         idempotencyKey,
       };
 
-      const res = await fetch("/api/reports", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      // Save directly to the central browser-local store
+      const result = clientStore.submitReport(payload as any);
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to submit report");
-      }
-
-      setSubmittedReportId(data.reportId);
+      setSubmittedReportId(result.reportId);
       setStep(5); // Success step
     } catch (err: any) {
-      setError(err.message || "An unexpected error occurred while submitting.");
+      setError(err.message || "An unexpected error occurred while saving the report.");
     } finally {
       setLoading(false);
     }

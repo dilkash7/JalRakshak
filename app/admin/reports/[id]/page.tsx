@@ -26,6 +26,9 @@ import {
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
+import { clientStore } from "@/lib/client-store";
+import { clientAuth } from "@/lib/client-auth";
+import { savePhoto, deletePhoto } from "@/lib/photo-store";
 
 export default function AdminReportDetailPage() {
   const params = useParams();
@@ -57,54 +60,43 @@ export default function AdminReportDetailPage() {
   const [addingNote, setAddingNote] = useState(false);
 
   useEffect(() => {
-    // Check auth
-    fetch("/api/auth/me")
-      .then((res) => {
-        if (!res.ok) throw new Error("Unauthenticated");
-        return res.json();
-      })
-      .then((data) => {
-        if (data.authenticated) {
-          setCurrentUser(data.user);
-          loadReport();
-          if (data.user.role === "admin") {
-            loadStaff();
-          }
-        } else {
-          router.push("/admin/login");
-        }
-      })
-      .catch(() => {
-        router.push("/admin/login");
-      });
+    const user = clientAuth.getCurrentUser();
+    if (!user) {
+      router.push("/admin/login");
+      return;
+    }
+    setCurrentUser(user);
+    loadReport();
+    if (user.role === "admin") {
+      loadStaff();
+    }
   }, [id]);
 
-  const loadStaff = async () => {
+  const loadStaff = () => {
     try {
-      const res = await fetch("/api/admin/staff");
-      const data = await res.json();
-      if (data.success && Array.isArray(data.staff)) {
-        setAvailableStaff(data.staff);
-      }
+      const staff = clientStore.getStaff();
+      setAvailableStaff(staff);
     } catch (err) {
       console.warn("Could not load staff list:", err);
     }
   };
 
-  const loadReport = async () => {
+  const loadReport = () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/admin/reports/${id}`);
-      if (!res.ok) throw new Error("Failed to load report");
-      const data = await res.json();
-      if (data.success && data.report) {
-        setReport(data.report);
-        setNewStatus(data.report.status);
-        setAssignedStaffUserId(data.report.assignedTo?.userId || "");
-        setAssignedStaffName(data.report.assignedTo?.name || "");
-        setPublicResolutionSummary(data.report.publicResolutionSummary || "");
-        setWaterSaved(data.report.estimatedWaterSavedLitres || 0);
-        setResolutionPhotos(data.report.resolutionPhotos || []);
+      const found = clientStore.getReportById(id);
+      if (!found) {
+        setError("Report not found");
+        setReport(null);
+      } else {
+        setError(null);
+        setReport(found);
+        setNewStatus(found.status);
+        setAssignedStaffUserId(found.assignedTo?.userId || "");
+        setAssignedStaffName(found.assignedTo?.name || "");
+        setPublicResolutionSummary(found.publicResolutionSummary || "");
+        setWaterSaved(found.estimatedWaterSavedLitres || 0);
+        setResolutionPhotos(found.resolutionPhotos || []);
       }
     } catch (err: any) {
       setError(err.message || "Could not load report");
@@ -119,30 +111,33 @@ export default function AdminReportDetailPage() {
     setUploadingProof(true);
     try {
       const file = files[0];
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = reader.result as string;
-        setResolutionPhotos((prev) => [
-          ...prev,
-          {
-            publicId: `proof-${Date.now()}`,
-            url: result,
-            secureUrl: result,
-          },
-        ]);
-        setUploadingProof(false);
-      };
-      reader.readAsDataURL(file);
-    } catch {
+      const photoId = `proof-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const saved = await savePhoto(photoId, file, file.name);
+
+      setResolutionPhotos((prev) => [
+        ...prev,
+        {
+          publicId: saved.id,
+          url: saved.url,
+          secureUrl: saved.secureUrl,
+        },
+      ]);
+    } catch (err) {
+      console.warn("Proof photo upload error:", err);
+    } finally {
       setUploadingProof(false);
     }
   };
 
-  const removeProofPhoto = (index: number) => {
+  const removeProofPhoto = async (index: number) => {
+    const photo = resolutionPhotos[index];
+    if (photo?.publicId) {
+      await deletePhoto(photo.publicId);
+    }
     setResolutionPhotos((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleUpdateStatus = async (e: React.FormEvent) => {
+  const handleUpdateStatus = (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
@@ -162,7 +157,7 @@ export default function AdminReportDetailPage() {
           const selected = availableStaff.find((s) => s._id === assignedStaffUserId);
           payload.assignedTo = {
             userId: assignedStaffUserId,
-            name: selected ? selected.name : assignedStaffName.trim(),
+            name: selected ? `${selected.name} (${selected.taluk || "Field Officer"})` : assignedStaffName.trim(),
           };
         } else if (assignedStaffName.trim()) {
           payload.assignedTo = {
@@ -172,16 +167,9 @@ export default function AdminReportDetailPage() {
         }
       }
 
-      const res = await fetch(`/api/admin/reports/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const updated = clientStore.updateReportStatus(id, payload, currentUser?.name || "Staff");
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to update report");
-
-      setReport(data.report);
+      setReport(updated);
       setStatusNote("");
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -192,22 +180,14 @@ export default function AdminReportDetailPage() {
     }
   };
 
-  const handleAddInternalNote = async (e: React.FormEvent) => {
+  const handleAddInternalNote = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newInternalNote.trim()) return;
 
     setAddingNote(true);
     try {
-      const res = await fetch(`/api/admin/reports/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ newNote: newInternalNote.trim() }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to add internal note");
-
-      setReport(data.report);
+      const updated = clientStore.addInternalNote(id, newInternalNote.trim(), currentUser?.name || "Staff");
+      setReport(updated);
       setNewInternalNote("");
     } catch (err: any) {
       setError(err.message || "Failed to add note");
